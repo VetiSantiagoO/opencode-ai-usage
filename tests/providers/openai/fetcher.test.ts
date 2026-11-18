@@ -3,6 +3,20 @@ import type { Writable } from "node:stream";
 import { detect, fetchUsage, normalizeUsedPercent } from "../../../src/providers/openai/fetcher";
 import type { ProviderDeps } from "../../../src/types";
 import type { RateLimitSnapshot } from "../../../src/providers/openai/types";
+import { platform } from "node:os";
+import { createRequire } from "node:module";
+import { existsSync } from "node:fs";
+
+vi.mock("node:os", () => ({
+  platform: vi.fn(() => "linux"),
+  arch: () => "x64",
+}));
+vi.mock("node:module", () => ({ createRequire: vi.fn() }));
+vi.mock("node:fs", () => ({ existsSync: vi.fn() }));
+
+afterEach(() => {
+  vi.mocked(platform).mockReturnValue("linux");
+});
 
 interface FakeChild extends EventEmitter {
   stdin: Writable & { written: string[] };
@@ -101,6 +115,85 @@ function createFakeDeps(overrides: Partial<ProviderDeps> = {}): ProviderDeps {
 }
 
 describe("detect", () => {
+  it("rejects a missing Windows vendor executable without starting a process", async () => {
+    vi.mocked(platform).mockReturnValue("win32");
+    vi.mocked(createRequire).mockReturnValue({
+      resolve: (name: string) => {
+        if (name === "@openai/codex/package.json") {
+          return "C:\\Test User\\npm\\node_modules\\@openai\\codex\\package.json";
+        }
+        throw new Error("no platform package");
+      },
+    } as unknown as ReturnType<typeof createRequire>);
+    vi.mocked(existsSync).mockReturnValue(false);
+    const deps = createFakeDeps({
+      exec: vi
+        .fn()
+        .mockReturnValue("C:\\Test User\\npm\\codex.cmd\r\n") as unknown as ProviderDeps["exec"],
+    });
+    expect(await detect(deps, new AbortController().signal)).toEqual({
+      available: false,
+      reason: "Codex CLI not found in PATH",
+    });
+    await expect(fetchUsage(deps, new AbortController().signal)).rejects.toThrow(
+      "Codex Windows executable not found",
+    );
+    expect(deps.spawn).not.toHaveBeenCalled();
+    expect(deps.execFile).not.toHaveBeenCalled();
+  });
+
+  it("detects a native Windows executable without requiring which", async () => {
+    vi.mocked(platform).mockReturnValue("win32");
+    const deps = createFakeDeps({
+      exec: vi.fn((command: string) => {
+        if (command === "where.exe codex") return "C:\\Tools\\codex.exe\r\n";
+        throw new Error("which is unavailable");
+      }) as unknown as ProviderDeps["exec"],
+      execFile: vi.fn().mockReturnValue("codex-cli test") as unknown as ProviderDeps["execFile"],
+    });
+    expect(await detect(deps, new AbortController().signal)).toEqual({ available: true });
+    expect(deps.execFile).toHaveBeenCalledWith("C:\\Tools\\codex.exe", ["--version"], {
+      encoding: "utf8",
+      timeout: 5000,
+      stdio: "pipe",
+    });
+  });
+
+  it("starts the native executable behind the Windows npm shim without a shell", async () => {
+    vi.mocked(platform).mockReturnValue("win32");
+    const binary =
+      "C:\\Test User\\npm\\node_modules\\@openai\\codex\\node_modules\\@openai\\codex-win32-x64\\vendor\\x86_64-pc-windows-msvc\\bin\\codex.exe";
+    const resolve = vi.fn((name: string) =>
+      name === "@openai/codex/package.json"
+        ? "C:\\Test User\\npm\\node_modules\\@openai\\codex\\package.json"
+        : "C:\\Test User\\npm\\node_modules\\@openai\\codex\\node_modules\\@openai\\codex-win32-x64\\package.json",
+    );
+    vi.mocked(createRequire).mockReturnValue({ resolve } as unknown as ReturnType<
+      typeof createRequire
+    >);
+    vi.mocked(existsSync).mockImplementation((path) => path === binary);
+    const child = scriptedChild(
+      { primary: { usedPercent: 25, windowDurationMins: 300 } },
+      "test@example.test",
+      "pro",
+    );
+    const deps = createFakeDeps({
+      exec: vi
+        .fn()
+        .mockReturnValue(
+          "C:\\Test User\\npm\\codex\r\nC:\\Test User\\npm\\codex.cmd\r\n",
+        ) as unknown as ProviderDeps["exec"],
+      execFile: vi.fn().mockReturnValue("codex-cli test") as unknown as ProviderDeps["execFile"],
+      spawn: vi.fn().mockReturnValue(child) as unknown as ProviderDeps["spawn"],
+    });
+    expect(await detect(deps, new AbortController().signal)).toEqual({ available: true });
+    const result = await fetchUsage(deps, new AbortController().signal);
+    expect(deps.spawn).toHaveBeenCalledWith(binary, ["app-server", "--listen", "stdio://"], {
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    expect(result.windows[0]?.percent).toBe(25);
+  });
+
   it("returns available when codex binary is found", async () => {
     const deps = createFakeDeps({
       exec: vi.fn().mockReturnValue("/usr/local/bin/codex\n") as unknown as ProviderDeps["exec"],

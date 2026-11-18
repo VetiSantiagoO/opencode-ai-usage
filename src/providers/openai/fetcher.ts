@@ -1,6 +1,8 @@
 import type { ProviderDeps, FetchResult, DetectionResult, UsageWindow } from "../../types";
 import { toUnixMs, toPercent, ProviderFetchError } from "../../types";
 import { formatWindowLabel } from "../../format";
+import { platform } from "node:os";
+import { resolveCodexPath } from "./command";
 import type {
   RateLimitSnapshot,
   RateLimitResponse,
@@ -11,9 +13,9 @@ import type {
 const RPC_TIMEOUT_MS = 15_000;
 
 export async function detect(deps: ProviderDeps, _signal: AbortSignal): Promise<DetectionResult> {
+  let path: string;
   try {
-    const raw = deps.exec("which codex", { encoding: "utf8", stdio: "pipe" });
-    const path = String(raw).trim();
+    path = resolveCodexPath(deps);
     if (path.length === 0) {
       return { available: false, reason: "Codex CLI not found in PATH" };
     }
@@ -22,7 +24,11 @@ export async function detect(deps: ProviderDeps, _signal: AbortSignal): Promise<
   }
 
   try {
-    deps.exec("codex --version", { encoding: "utf8", timeout: 5_000, stdio: "pipe" });
+    if (platform() === "win32") {
+      deps.execFile(path, ["--version"], { encoding: "utf8", timeout: 5_000, stdio: "pipe" });
+    } else {
+      deps.exec("codex --version", { encoding: "utf8", timeout: 5_000, stdio: "pipe" });
+    }
     return { available: true };
   } catch {
     return { available: false, reason: "Codex CLI found but not executable" };
@@ -36,7 +42,7 @@ export async function fetchUsage(
   return new Promise<FetchResult<null>>((resolve, reject) => {
     let settled = false;
 
-    const codexPath = String(deps.exec("which codex", { encoding: "utf8" })).trim();
+    const codexPath = resolveCodexPath(deps);
 
     const child = deps.spawn(codexPath, ["app-server", "--listen", "stdio://"], {
       stdio: ["pipe", "pipe", "pipe"],

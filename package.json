@@ -1,7 +1,7 @@
 {
   "name": "opencode-ai-usage",
   "version": "1.1.0",
-  "description": "OpenCode TUI sidebar plugin displaying multi-provider AI usage statistics",
+  "description": "OpenCode terminal and Desktop plugin displaying multi-provider AI usage statistics",
   "keywords": [
     "claude",
     "codex",
@@ -20,13 +20,17 @@
     "url": "git+https://github.com/stevejkang/opencode-ai-usage.git"
   },
   "files": [
-    "src"
+    "src",
+    "dist/gui-experimental.cjs"
   ],
   "type": "module",
   "exports": {
-    "./tui": "./src/tui.tsx"
+    "./tui": "./src/tui.tsx",
+    "./gui-experimental": "./dist/gui-experimental.cjs"
   },
   "scripts": {
+    "build:gui": "vite build",
+    "prepack": "npm run build:gui",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint",
@@ -40,11 +44,14 @@
   },
   "devDependencies": {
     "@opencode-ai/plugin": "^1.4.3",
-    "@opencode/plugin": "^2.0.20",
+    "@opencode/plugin": "2.3.0",
     "@types/node": "^26.6.2",
+    "effect": "4.1.0",
     "oxfmt": "^0.68.0",
     "oxlint": "^1.83.0",
     "typescript": "^7.0.2",
+    "vite": "^8.3.0",
+    "vite-plugin-solid": "^2.11.0",
     "vitest": "^5.0.1"
   },
   "peerDependencies": {

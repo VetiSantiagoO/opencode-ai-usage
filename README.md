@@ -1,6 +1,6 @@
 # opencode-ai-usage
 
-An [OpenCode](https://opencode.ai) TUI sidebar plugin that displays AI provider usage in one unified sidebar. Each detected provider gets its own collapsible section with rate limit windows, reset countdowns, and account info.
+An [OpenCode](https://opencode.ai) plugin that displays AI provider usage in the terminal sidebar or a Desktop side panel.
 
 **Mixed mode** (default):
 
@@ -34,6 +34,24 @@ Paste below into your OpenCode.
 Install and configure opencode-ai-usage by following the instructions here:
 https://raw.githubusercontent.com/stevejkang/opencode-ai-usage/refs/heads/main/docs/installation.md
 ```
+
+### OpenCode Desktop: try the local build
+
+Validated on Windows with OpenCode Desktop 2.3.2 and Codex CLI 0.167.2. The GUI uses an experimental SDK; see the [Desktop guide](docs/desktop.md) for architecture, troubleshooting, and verification.
+
+From this checkout, run `bun install` and `bun run build:gui`. In your **global** `~/.config/opencode/opencode.json(c)`, add the repository directory to `plugins` without removing existing entries:
+
+```jsonc
+{
+  "plugins": ["file:///C:/path/to/opencode-ai-usage"],
+}
+```
+
+Use your checkout's actual path (for example, `/path/to/opencode-ai-usage` on macOS or Linux). Open a Desktop session and select **AI usage** from the side panel's **+** menu, or **Open AI usage** from the command palette. If the panel is missing, check **Settings > Extensions > Plugins** and make sure `dist/gui-experimental.cjs` was built. The Desktop entry uses an experimental API; it is separate from the terminal entry in `cli.json`.
+
+Desktop uses the same supported providers and respects `disabledProviders`, `showRemaining`, provider refresh intervals, and debug logging. `displayMode` and header colors apply only to the terminal.
+
+On Windows, Codex detection uses `where.exe` and starts the native executable, including when Codex was installed through npm. An OpenCode model connection alone does not provide usage data: the Codex CLI must be installed and signed in for OpenAI usage.
 
 ### Manual setup
 
