@@ -1,7 +1,4 @@
 /** @jsxImportSource @opentui/solid */
-import { execSync, execFileSync, spawn as nodeSpawn } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { homedir as osHomedir } from "node:os";
 import { createSignal, onCleanup, onMount, type JSX } from "solid-js";
 import type { TuiPlugin, TuiPluginModule, TuiSlotContext } from "@opencode-ai/plugin/tui";
 import type { Plugin as V2Plugin } from "@opencode/plugin/tui";
@@ -10,23 +7,13 @@ import type {
   DisplayMode,
   PluginOptions,
   ProviderDefinition,
-  ProviderDeps,
   RefreshDiagnostics,
   RefreshState,
   TuiTheme,
   UsageWindow,
 } from "./types";
 import { toPercent } from "./types";
-import { createRegistry } from "./registry";
-import { createRefreshLoop } from "./refresh";
-import { createCacheStore } from "./cache";
-import {
-  createDebugLog,
-  debugLogDir,
-  describeProcess,
-  noopDebugLog,
-  resolveDebugLogConfig,
-} from "./debug-log";
+import { startUsageRuntime } from "./usage-runtime";
 import {
   formatBar,
   formatCreditDisplay,
@@ -35,10 +22,6 @@ import {
   getPercentColor,
   ACTION_REQUIRED_COLOR,
 } from "./format";
-import { createClaudeProvider } from "./providers/claude";
-import { createOpenAIProvider } from "./providers/openai";
-import { createOpenCodeGoProvider } from "./providers/opencode-go";
-
 import {
   computeDisplayPercent,
   computeSectionVisibility,
@@ -369,125 +352,53 @@ async function startUsage(rawOptions: unknown): Promise<UsageInstance> {
   const displayMode: DisplayMode = options.displayMode ?? "mixed";
   const showRemaining = options.showRemaining ?? false;
 
-  const deps: ProviderDeps = {
-    exec: execSync,
-    execFile: execFileSync,
-    spawn: nodeSpawn,
-    readFile: readFileSync,
-    fetch: globalThis.fetch,
-    now: Date.now,
-    homedir: osHomedir,
-  };
+  const views = new Map<
+    string,
+    ProviderRuntime & { publish: (state: RefreshState) => void; stopCountdown: () => void }
+  >();
+  const runtime = startUsageRuntime(options, {
+    onChange(item) {
+      const existing = views.get(item.provider.id);
+      if (existing) {
+        existing.publish(item.state);
+        return;
+      }
 
-  const cache = createCacheStore();
-  const registry = createRegistry([
-    createClaudeProvider(),
-    createOpenAIProvider(),
-    createOpenCodeGoProvider(),
-  ]);
-  const enabled = registry.getEnabled(options.disabledProviders);
-
-  const debugConfig = resolveDebugLogConfig(options.debugLog);
-  const log = debugConfig.enabled
-    ? createDebugLog({
-        retentionDays: debugConfig.retentionDays,
-        maxFileBytes: debugConfig.maxFileBytes,
-      })
-    : noopDebugLog;
-  if (debugConfig.enabled) {
-    log("plugin.init", {
-      cwd: process.cwd(),
-      ...describeProcess(),
-      logDir: debugLogDir(),
-      debugLog: debugConfig,
-      providers: enabled.map((p) => p.id),
-      displayMode,
-      showRemaining,
-    });
-  }
-
-  const controller = new AbortController();
-  const { signal } = controller;
-  const tickTimers: (ReturnType<typeof setInterval> | null)[] = [];
-  const runtimes: ProviderRuntime[] = [];
-
-  for (const provider of enabled) {
-    let detected = false;
-    try {
-      const result = await provider.detect(deps, signal);
-      detected = result.available;
-      log("provider.detect", {
-        provider: provider.id,
-        available: result.available,
-        reason: result.available ? null : result.reason,
-      });
-    } catch (error) {
-      detected = false;
-      log("provider.detect", {
-        provider: provider.id,
-        available: false,
-        reason: error instanceof Error ? error.message : String(error),
-      });
-    }
-
-    const overrides = options.providers?.[provider.id];
-    const refreshIntervalMs =
-      (overrides?.refreshInterval ?? provider.defaultRefreshIntervalS) * 1000;
-    let diagnostics: (() => RefreshDiagnostics) | null = null;
-    const headerColor = overrides?.headerColor ?? provider.defaultHeaderColor;
-
-    const [state, rawSetState] = createSignal<RefreshState>({
-      windows: [],
-      profile: null,
-      extras: null,
-      error: null,
-      actionRequired: null,
-      lastFetchedAt: null,
-    });
-    const [open, setOpen] = createSignal(true);
-    const [countdown, setCountdown] = createSignal(provider.expectedLoadTimeS);
-
-    const idx = tickTimers.length;
-    tickTimers.push(null);
-
-    if (detected) {
-      tickTimers[idx] = setInterval(() => {
-        setCountdown((prev) => Math.max(0, prev - 1));
-      }, 1000);
-
-      const setState = (s: RefreshState) => {
-        if (s.lastFetchedAt !== null || s.error !== null) {
-          if (tickTimers[idx]) {
-            clearInterval(tickTimers[idx]!);
-            tickTimers[idx] = null;
-          }
-        }
-        rawSetState(s);
+      const [state, setState] = createSignal(item.state);
+      const [open, setOpen] = createSignal(true);
+      const [countdown, setCountdown] = createSignal(item.provider.expectedLoadTimeS);
+      let timer = item.detected
+        ? setInterval(() => setCountdown((previous) => Math.max(0, previous - 1)), 1000)
+        : undefined;
+      const stopCountdown = () => {
+        clearInterval(timer);
+        timer = undefined;
       };
 
-      diagnostics = createRefreshLoop({
-        provider,
-        deps,
-        cache,
-        signal,
-        intervalMs: refreshIntervalMs,
-        setState,
-        log,
-      }).diagnostics;
-    }
-
-    runtimes.push({
-      provider,
-      detected,
-      state,
-      open,
-      toggleOpen: () => setOpen((prev) => !prev),
-      countdown,
-      refreshIntervalMs,
-      headerColor,
-      diagnostics,
-    });
-  }
+      views.set(item.provider.id, {
+        provider: item.provider,
+        detected: item.detected,
+        refreshIntervalMs: item.refreshIntervalMs,
+        get diagnostics() {
+          return item.diagnostics;
+        },
+        state,
+        publish(next) {
+          if (next.lastFetchedAt !== null || next.error !== null) stopCountdown();
+          setState(next);
+        },
+        open,
+        toggleOpen: () => setOpen((previous) => !previous),
+        countdown,
+        stopCountdown,
+        headerColor:
+          options.providers?.[item.provider.id]?.headerColor ?? item.provider.defaultHeaderColor,
+      });
+    },
+  });
+  await runtime.ready;
+  const { log } = runtime;
+  const runtimes = [...views.values()];
 
   const watchedStaleText = new Map<string, string | null>();
   const renderedStaleText = new Map<string, string | null>();
@@ -529,17 +440,14 @@ async function startUsage(rawOptions: unknown): Promise<UsageInstance> {
       }
     }
   };
-  const staleWatcher = debugConfig.enabled
+  const staleWatcher = runtime.debugEnabled
     ? setInterval(watchStale, STALE_WATCH_INTERVAL_MS)
     : null;
 
   const dispose = () => {
-    log("plugin.dispose");
-    controller.abort();
+    runtime.dispose();
     if (staleWatcher) clearInterval(staleWatcher);
-    for (const timer of tickTimers) {
-      if (timer) clearInterval(timer);
-    }
+    for (const view of runtimes) view.stopCountdown();
   };
 
   const [sharedBarWidth, setSharedBarWidth] = createSignal(0);
